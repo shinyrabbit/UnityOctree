@@ -6,23 +6,31 @@ using UnityEngine;
 public class BoundsOctreeNode<T> {
 	// Centre of this node
 	public Vector3 Center { get; private set; }
+
 	// Length of this node if it has a looseness of 1.0
 	public float BaseLength { get; private set; }
 
 	// Looseness value for this node
 	float looseness;
+
 	// Minimum size for a node in this octree
 	float minSize;
+
 	// Actual length of sides, taking the looseness value into account
 	float adjLength;
+
 	// Bounding box that represents this node
 	Bounds bounds = default(Bounds);
+
 	// Objects in this node
 	readonly List<OctreeObject> objects = new List<OctreeObject>();
+
 	// Child nodes, if any
 	BoundsOctreeNode<T>[] children = null;
+
 	// Bounds of potential children to this node. These are actual size (with looseness taken into account), not base size
 	Bounds[] childBounds;
+
 	// If there are already numObjectsAllowed in a node, we split it into children
 	// A generally good number seems to be something around 8-15
 	const int numObjectsAllowed = 8;
@@ -93,6 +101,19 @@ public class BoundsOctreeNode<T> {
 	}
 
 	/// <summary>
+	/// Removes the specified object at the given position. Makes the assumption that the object only exists once in the tree.
+	/// </summary>
+	/// <param name="obj">Object to remove.</param>
+	/// <param name="objBounds">3D bounding box around the object.</param>
+	/// <returns>True if the object was removed successfully.</returns>
+	public bool Remove(T obj, Bounds objBounds) {
+		if (!Encapsulates(bounds, objBounds)) {
+			return false;
+		}
+		return SubRemove(obj, objBounds);
+	}
+
+	/// <summary>
 	/// Check if the specified bounds intersect with anything in the tree. See also: GetColliding.
 	/// </summary>
 	/// <param name="checkBounds">Bounds to check.</param>
@@ -123,9 +144,41 @@ public class BoundsOctreeNode<T> {
 	}
 
 	/// <summary>
+	/// Check if the specified ray intersects with anything in the tree. See also: GetColliding.
+	/// </summary>
+	/// <param name="checkRay">Ray to check.</param>
+	/// <param name="maxDistance">Distance to check.</param>
+	/// <returns>True if there was a collision.</returns>
+	public bool IsColliding(ref Ray checkRay, float maxDistance = float.PositiveInfinity) {
+		// Is the input ray at least partially in this node?
+		float distance;
+		if (!bounds.IntersectRay(checkRay, out distance) || distance > maxDistance) {
+			return false;
+		}
+
+		// Check against any objects in this node
+		for (int i = 0; i < objects.Count; i++) {
+			if (objects[i].Bounds.IntersectRay(checkRay, out distance) && distance <= maxDistance) {
+				return true;
+			}
+		}
+
+		// Check children
+		if (children != null) {
+			for (int i = 0; i < 8; i++) {
+				if (children[i].IsColliding(ref checkRay, maxDistance)) {
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	/// <summary>
 	/// Returns an array of objects that intersect with the specified bounds, if any. Otherwise returns an empty array. See also: IsColliding.
 	/// </summary>
-	/// <param name="checkBounds">Bounds to check. Passing by ref as it improve performance with structs.</param>
+	/// <param name="checkBounds">Bounds to check. Passing by ref as it improves performance with structs.</param>
 	/// <param name="result">List result.</param>
 	/// <returns>Objects that intersect with the specified bounds.</returns>
 	public void GetColliding(ref Bounds checkBounds, List<T> result) {
@@ -150,6 +203,35 @@ public class BoundsOctreeNode<T> {
 	}
 
 	/// <summary>
+	/// Returns an array of objects that intersect with the specified ray, if any. Otherwise returns an empty array. See also: IsColliding.
+	/// </summary>
+	/// <param name="checkRay">Ray to check. Passing by ref as it improves performance with structs.</param>
+	/// <param name="maxDistance">Distance to check.</param>
+	/// <param name="result">List result.</param>
+	/// <returns>Objects that intersect with the specified ray.</returns>
+	public void GetColliding(ref Ray checkRay, List<T> result, float maxDistance = float.PositiveInfinity) {
+		float distance;
+		// Is the input ray at least partially in this node?
+		if (!bounds.IntersectRay(checkRay, out distance) || distance > maxDistance) {
+			return;
+		}
+
+		// Check against any objects in this node
+		for (int i = 0; i < objects.Count; i++) {
+			if (objects[i].Bounds.IntersectRay(checkRay, out distance) && distance <= maxDistance) {
+				result.Add(objects[i].Obj);
+			}
+		}
+
+		// Check children
+		if (children != null) {
+			for (int i = 0; i < 8; i++) {
+				children[i].GetColliding(ref checkRay, result, maxDistance);
+			}
+		}
+	}
+
+	/// <summary>
 	/// Set the 8 children of this octree.
 	/// </summary>
 	/// <param name="childOctrees">The 8 new child nodes.</param>
@@ -160,6 +242,10 @@ public class BoundsOctreeNode<T> {
 		}
 
 		children = childOctrees;
+	}
+
+	public Bounds GetBounds() {
+		return bounds;
 	}
 
 	/// <summary>
@@ -217,7 +303,7 @@ public class BoundsOctreeNode<T> {
 		if (BaseLength < (2 * minLength)) {
 			return this;
 		}
-		if (objects.Count == 0 && children.Length == 0) {
+		if (objects.Count == 0 && (children == null || children.Length == 0)) {
 			return this;
 		}
 
@@ -265,6 +351,11 @@ public class BoundsOctreeNode<T> {
 			// We don't have any children, so just shrink this node to the new size
 			// We already know that everything will still fit in it
 			SetValues(BaseLength / 2, minSize, looseness, childBounds[bestFit].center);
+			return this;
+		}
+
+		// No objects in entire octree
+		if (bestFit == -1) {
 			return this;
 		}
 
@@ -376,6 +467,37 @@ public class BoundsOctreeNode<T> {
 	}
 
 	/// <summary>
+	/// Private counterpart to the public <see cref="Remove(T, Bounds)"/> method.
+	/// </summary>
+	/// <param name="obj">Object to remove.</param>
+	/// <param name="objBounds">3D bounding box around the object.</param>
+	/// <returns>True if the object was removed successfully.</returns>
+	bool SubRemove(T obj, Bounds objBounds) {
+		bool removed = false;
+
+		for (int i = 0; i < objects.Count; i++) {
+			if (objects[i].Obj.Equals(obj)) {
+				removed = objects.Remove(objects[i]);
+				break;
+			}
+		}
+
+		if (!removed && children != null) {
+			int bestFitChild = BestFitChild(objBounds);
+			removed = children[bestFitChild].SubRemove(obj, objBounds);
+		}
+
+		if (removed && children != null) {
+			// Check if we should merge nodes now that we've removed an item
+			if (ShouldMerge()) {
+				Merge();
+			}
+		}
+
+		return removed;
+	}
+
+	/// <summary>
 	/// Splits the octree into eight children.
 	/// </summary>
 	void Split() {
@@ -453,7 +575,7 @@ public class BoundsOctreeNode<T> {
 	/// Checks if this node or anything below it has something in it.
 	/// </summary>
 	/// <returns>True if this node or any of its children, grandchildren etc have something in them</returns>
-	bool HasAnyObjects() {
+	public bool HasAnyObjects() {
 		if (objects.Count > 0) return true;
 
 		if (children != null) {
